@@ -5,6 +5,7 @@ pub mod netcore;
 mod protocol;
 pub use netcore::*;
 pub mod utils;
+pub use utils::*;
 use crate::encryption::{PrivKeyComp, PubKeyComp};
 use std::error::Error;
 use std::net::IpAddr;
