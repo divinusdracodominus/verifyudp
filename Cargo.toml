@@ -10,14 +10,6 @@ repository = "https://github.com/artifice-network/networking"
 
 description = "secure RSA + AES network implementations in a peer to peer enabled manner"
 
-[features]
-unified = []
-
-lowlevel = ["pnet"]
-adhoc = ["lowlevel"]
-
-full = ["unified", "lowlevel"]
-
 [dependencies]
 rsa = "0.3.0"
 serde_derive = "1.0.114"
@@ -25,17 +17,12 @@ serde_json = "1.0.56"
 serde = "1.0.114"
 num-bigint-dig = "0.6.0"
 rand = "0.7.3"
+num-traits = "*"
+num-derive = "*"
 futures = "0.3.5"
 tokio = {version = "0.2.22", features = ["full"]}
 async-trait = "0.1.36"
-toml = "0.5.6"
-num-derive = "0.3.1"
-num-traits = "0.2.12"
-walkdir = "2.3.1"
-tar = "0.4.29"
+
 err-derive = "*"
 serde-hex = "*"
 aes-soft = {path = "./aes-soft"}
-
-pnet = {version = "0.26.0", optional = true}
-ipnetwork = {version = "0.16.0"}

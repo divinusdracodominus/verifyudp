@@ -1,7 +1,5 @@
 //use crate::encryption::PubKeyComp;
 
-//use crate::netcore::{L3Addr, L4Addr};
-use ipnetwork::IpNetworkError;
 
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
@@ -156,16 +154,12 @@ pub enum NetworkError {
     SyncRecvError(#[error(no_from)] String),
     #[error(display = "Join Error: {}", _0)]
     JoinError(#[source] JoinError),
-    #[error(display = "WalkDir Error: {}", _0)]
-    DirError(#[source] walkdir::Error),
     #[error(display = "Not Asyncronous")]
     NotAsync,
     #[error(display = "Not Syncronous")]
     NotSync,
     #[error(display = "No Data Yet")]
     Empty,
-    #[error(display = "ip network error: {}", _0)]
-    NetErr(#[source] IpNetworkError),
 }
 impl<T> From<AsyncSendError<T>> for NetworkError {
     fn from(error: AsyncSendError<T>) -> NetworkError {
