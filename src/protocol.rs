@@ -1,7 +1,7 @@
-use crate::random_string;
-use crate::{NetworkError};
-use crate::netcore::*;
 use crate::encryption::*;
+use crate::netcore::*;
+use crate::random_string;
+use crate::NetworkError;
 
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
@@ -34,20 +34,24 @@ impl Default for PacketType {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemotePeer {
-    addr: SocketAddr,
-    pubkey: rsa::RSAPublicKey,
+    addr: L4Addr,
+    pubkey: PubKeyComp
 }
 
 impl RemotePeer {
     pub fn new(addr: L4Addr, pubkey: PubKeyComp) -> Self {
         Self {
-            addr: addr.into(),
-            pubkey: pubkey.into(),
+            addr,
+            pubkey,
         }
     }
     pub fn socket_addr(&self) -> SocketAddr {
-        self.addr
+        self.addr.into()
+    }
+    pub fn decompose(self) -> (L4Addr, PubKeyComp) {
+        (self.addr, self.pubkey)
     }
 }
 
@@ -56,7 +60,7 @@ use std::convert::TryInto;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash)]
 pub struct StreamHeader {
     /// this exists for legacy reasons
-    checksum: [u8;32],
+    checksum: [u8; 32],
     aes_key: Vec<u8>,
     packet_len: usize,
     packet_type: PacketType,
@@ -67,11 +71,8 @@ impl StreamHeader {
         let aes_key: Vec<u8> = random_string(16).into_bytes();
         Self::with_key(aes_key, packet_len)
     }
-    pub fn with_key(
-        aes_key: Vec<u8>,
-        packet_len: usize,
-    ) -> Self {
-        let checksum = [0;32];
+    pub fn with_key(aes_key: Vec<u8>, packet_len: usize) -> Self {
+        let checksum = [0; 32];
         Self {
             checksum,
             aes_key,

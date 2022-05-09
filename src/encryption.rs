@@ -4,8 +4,8 @@ use rand::rngs::OsRng;
 use rsa::{PaddingScheme, PublicKey, PublicKeyParts, RSAPrivateKey, RSAPublicKey};
 use std::fmt;
 
+use crate::protocol::StreamHeader;
 use crate::NetworkError;
-use crate::protocol::{StreamHeader};
 
 /// the purpose of this structure is to provide an implementation of BigUint, as is used by the rsa crate, that can be serialized for the sake of storing an retriving rsa keys
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -76,6 +76,13 @@ impl From<&RSAPublicKey> for PubKeyComp {
         Self::from_parts(BigNum::from(public_key.n()), BigNum::from(public_key.e()))
     }
 }
+
+impl From<PubKeyComp> for RSAPublicKey {
+    fn from(key: PubKeyComp) -> RSAPublicKey {
+        RSAPublicKey::new(BigUint::from(key.n()), BigUint::from(key.e())).unwrap()
+    }
+}
+
 impl From<&RSAPrivateKey> for PubKeyComp {
     fn from(private_key: &RSAPrivateKey) -> Self {
         Self::from(&RSAPublicKey::from(private_key))
@@ -253,7 +260,7 @@ pub fn asym_aes_decrypt(
     let decryptor = Aes128::new(header.key());
     for index in (256..data_len + 256).step_by(128) {
         decryptor.decrypt_blocks(&mut input[index..index + 128]);
-        output.extend_from_slice(&input[index..index+128]);
+        output.extend_from_slice(&input[index..index + 128]);
     }
     let newlen = output.len() - (rem as usize);
     output.truncate(newlen);
@@ -273,7 +280,7 @@ pub fn asym_aes_decrypt(
 #[test]
 fn sym_encrypt_test() {
     use crate::random_string;
-    
+
     use rand::Rng;
     use std::time::SystemTime;
     let mut avg = 0;
@@ -330,11 +337,10 @@ fn sym_encrypt_test() {
 }
 #[test]
 fn asym_encrypt_test() {
-    
     use std::time::SystemTime;
     let time = SystemTime::now();
     use crate::random_string;
-    
+
     let stream_header = StreamHeader::new(0);
     let private_key = crate::get_private_key();
     let public_key = RSAPublicKey::from(&private_key);
@@ -372,7 +378,7 @@ pub fn sym_inplace_encrypt(header: &StreamHeader, data: &mut Vec<u8>) {
     unsafe { remvec.set_len(128 + (remander as usize)) }
     data.extend_from_slice(&remvec);
     data.rotate_right(128);
-    std::io::copy(&mut header_vec.as_slice(), &mut &mut data[0..128]);//.unwrap();
+    std::io::copy(&mut header_vec.as_slice(), &mut &mut data[0..128]); //.unwrap();
 
     // create the encryptor
     let encryptor = Aes128::new(header.key());
@@ -394,9 +400,9 @@ pub fn sym_inplace_decrypt(
     }
 
     let remote_header = StreamHeader::from_raw_padded(&data[0..128])?;
-    let mut packet_len = 0;//remote_header.packet_len();
-    let mut remander = 0;//remote_header.remander() as usize;
-    //data.drain(0..128);
+    let mut packet_len = 0; //remote_header.packet_len();
+    let mut remander = 0; //remote_header.remander() as usize;
+                          //data.drain(0..128);
     let mut indexes = Vec::new();
     let mut headers = Vec::new();
     //indexes.push(remote_header.packet_len());
@@ -404,7 +410,9 @@ pub fn sym_inplace_decrypt(
     headers.push(remote_header);
 
     while packet_len + remander < data.len() {
-        let new_header = StreamHeader::from_raw_padded(&data[packet_len+remander..packet_len +remander + 128])?;
+        let new_header = StreamHeader::from_raw_padded(
+            &data[packet_len + remander..packet_len + remander + 128],
+        )?;
         println!("new_header: {:?}\n\n\n\n", new_header);
         println!("packet_len: {}, remander: {}\n\n", packet_len, remander);
         data.drain(packet_len..packet_len + 128 + remander);

@@ -1,29 +1,28 @@
-#[macro_use]extern crate serde_derive;
+#[macro_use]
+extern crate serde_derive;
 mod encryption;
-mod protocol;
 pub mod netcore;
+mod protocol;
 pub use netcore::*;
 pub mod utils;
-pub use utils::*;
+use crate::encryption::{PrivKeyComp, PubKeyComp};
 use std::error::Error;
 use std::net::IpAddr;
-use std::thread;
 use std::sync::mpsc::*;
+use std::thread;
 use std::time::Duration;
-use crate::encryption::{PubKeyComp, PrivKeyComp};
-use tokio::net::ToSocketAddrs;
+pub use utils::*;
 // ===================================================================
 //                                 Dependencies
 // ===================================================================
 //use crate::asyncronous::{AsyncNetworkHost};
 use crate::encryption::{
-    asym_aes_decrypt as aes_decrypt, asym_aes_encrypt as aes_encrypt,
-    sym_aes_decrypt, sym_aes_encrypt
+    asym_aes_decrypt as aes_decrypt, asym_aes_encrypt as aes_encrypt, sym_aes_decrypt,
+    sym_aes_encrypt,
 };
 use crate::{
-    protocol::RemotePeer,
-    random_string, AsyncQuery, L4Addr,
-    NetworkError, Query, protocol::StreamHeader,
+    protocol::RemotePeer, protocol::StreamHeader, random_string, AsyncQuery, L4Addr, NetworkError,
+    Query,
 };
 use async_trait::async_trait;
 use futures::{
@@ -97,17 +96,13 @@ pub struct ArtificeHostData {
 impl Default for ArtificeHostData {
     fn default() -> Self {
         let priv_key = PrivKeyComp::generate().unwrap();
-        Self {
-            priv_key,
-        }
+        Self { priv_key }
     }
 }
 impl ArtificeHostData {
     pub fn new(private_key: &RSAPrivateKey) -> Self {
         let priv_key = PrivKeyComp::from(private_key);
-        Self {
-            priv_key,
-        }
+        Self { priv_key }
     }
     /// returns the n, e, d, and primes of an RSA key
     pub fn privkeycomp(&self) -> &PrivKeyComp {
@@ -119,7 +114,9 @@ impl ArtificeHostData {
 pub trait ArtificeHost {
     /// sets up a udp socket to broadcast the existence of a peer on the local network
     /// kind of stupid, but at the time I thought it was a good idea as an optional feature
-    fn begin_broadcast<S: std::net::ToSocketAddrs>(socket_addr: S) -> std::io::Result<std::sync::mpsc::Sender<bool>> {
+    fn begin_broadcast<S: std::net::ToSocketAddrs>(
+        socket_addr: S,
+    ) -> std::io::Result<std::sync::mpsc::Sender<bool>> {
         let (sender, recv) = std::sync::mpsc::channel();
         let socket = std::net::UdpSocket::bind(socket_addr)?;
         socket.set_broadcast(true)?;
@@ -193,6 +190,7 @@ pub trait AsyncDataStream: AsyncSend + AsyncRecv {
 }
 
 pub struct AsyncRequest<T: AsyncDataStream> {
+    pubkey: PubKeyComp,
     stream: T,
 }
 
@@ -205,7 +203,7 @@ pub trait ConnectionRequest {
     /// the data stream object that this trait operates on
     type NetStream;
     #[allow(missing_docs)]
-    fn new(stream: Self::NetStream) -> Self;
+    fn new(stream: Self::NetStream, pubkey: PubKeyComp) -> Self;
     /// used to ensure only known peers are allow to connect
     fn verify<L: PeerList>(self, list: &L) -> Result<Self::NetStream, Self::Error>;
     /// # Safety
@@ -213,7 +211,6 @@ pub trait ConnectionRequest {
     /// should only be used if a pair request is being run
     unsafe fn unverify(self) -> Self::NetStream;
 }
-
 
 // used to create handshake between both sides of sllp stream
 async fn handshake(
@@ -229,19 +226,23 @@ async fn handshake(
         .write(&aes_encrypt(
             &RSAPublicKey::from(priv_key),
             header.clone(),
-            &serde_json::to_string(&sender_addr)?.into_bytes(),
+            &serde_json::to_string(&peer)?.into_bytes(),
         )?)
         .await?;
     let mut inbuf: [u8; 1000] = [0; 1000];
     let data_len = tcpstream.read(&mut inbuf).await?;
-    let (dec_data, new_header, _indexes) = sym_aes_decrypt(header, &mut inbuf[0..data_len])?;
+    let (dec_data, new_header) = aes_decrypt(&priv_key, &mut inbuf[0..data_len])?;
     if header.checksum() != new_header.checksum() {
         return Err(NetworkError::ConnectionDenied(
             "headers don't match".to_string(),
         ));
     }
-    let in_data = String::from_utf8(dec_data)?;
-    println!("in_data: {}", in_data);
+    //let in_data = String::from_utf8(dec_data)?;
+    
+    tcpstream.write(&aes_encrypt(&RSAPublicKey::from(priv_key), header.clone(), &dec_data)?).await?;
+    let dec_res_len = tcpstream.read(&mut inbuf).await?;
+    let (dec_result, _, _) = sym_aes_decrypt(&header, &mut inbuf[0..dec_res_len])?;
+    let in_data = String::from_utf8(dec_result)?;
     if in_data != "okay" {
         return Err(NetworkError::ConnectionDenied(String::from(
             "connection failed",
@@ -253,7 +254,7 @@ fn incoming_conn(
     receiver: &mut Receiver<NewConnection>,
     ctx: &mut Context<'_>,
 ) -> Poll<Option<Result<AsyncRequest<SllpStream>, NetworkError>>> {
-    let (header, addr, query) = match receiver.poll_recv(ctx) {
+    let (header, addr, query, pubkey) = match receiver.poll_recv(ctx) {
         Poll::Ready(data) => match data {
             Some(data) => data?,
             None => return Poll::Ready(None),
@@ -266,6 +267,7 @@ fn incoming_conn(
             Ok(stream) => stream,
             Err(e) => return Poll::Ready(Some(Err(e))),
         },
+        pubkey,
     ))))
 }
 async fn recv_incoming(
@@ -278,8 +280,22 @@ async fn recv_incoming(
     let (mut stream, tcpaddr) = listener.accept().await?;
     let data_len = stream.read(&mut buffer).await?;
     let (dec_data, header) = aes_decrypt(&in_priv_key, &mut buffer[0..data_len])?;
-    let layer3_addr: L4Addr = serde_json::from_str(&String::from_utf8(dec_data)?)?;
+    let remote_peer: RemotePeer = serde_json::from_str(&String::from_utf8(dec_data)?)?;
+    let (layer3_addr, pubkeycomp) = remote_peer.decompose();
+    // then randomly generate a string encypt using public key
+    // then have client send the random string back, there by completing
+    // the challenge and verifyig the publickey
     let addr = SocketAddr::new(tcpaddr.ip(), layer3_addr.port());
+    let challenge_str = random_string(32);
+    let challenge = challenge_str.as_bytes();
+    stream.write(&aes_encrypt(&pubkeycomp.clone().into(), header, challenge)?).await?;
+    //buffer.clear();
+    let newlen = stream.read(&mut buffer).await?;
+    let (newdec, header) = aes_decrypt(&in_priv_key, &mut buffer[0..newlen])?;
+    if newdec != challenge {
+        // should really return an error here
+        panic!("public key verification failed");
+    }
     stream.write(&sym_aes_encrypt(&header, b"okay")).await?;
     // SllpSocket -> SllpStream Vec<u8> = data recv, usize = data length
     let (incoming_sender, incoming_receiver): (Sender<IncomingMsg>, Receiver<(Vec<u8>, usize)>) =
@@ -291,19 +307,19 @@ async fn recv_incoming(
     // store incoming sender
     println!("recv addr: {}", addr);
     in_sender.lock().await.insert(addr, incoming_sender);
-    Ok((header, addr, foward))
+    Ok((header, addr, foward, pubkeycomp))
 }
 
 impl<T: AsyncDataStream> ConnectionRequest for AsyncRequest<T> {
     type Error = NetworkError;
     type NetStream = T;
-    fn new(stream: Self::NetStream) -> Self {
-        Self { stream }
+    fn new(stream: Self::NetStream, pubkey: PubKeyComp) -> Self {
+        Self { stream, pubkey }
     }
     fn verify<L: PeerList>(self, list: &L) -> Result<Self::NetStream, Self::Error> {
         // public key should be sent in first packet
-        let peer = ;
-        if list.verify_peer(&peer) {
+
+        if list.verify_peer(&self.pubkey) {
             Ok(self.stream)
         } else {
             Err(NetworkError::ConnectionDenied(
@@ -315,7 +331,6 @@ impl<T: AsyncDataStream> ConnectionRequest for AsyncRequest<T> {
         self.stream
     }
 }
-
 
 // ==========================================================================
 //                          Split type for Sllp Stream
@@ -571,6 +586,7 @@ pub type NewConnection = Result<
         StreamHeader,
         SocketAddr,
         AsyncQuery<OutgoingMsg, IncomingMsg>,
+        PubKeyComp
     ),
     NetworkError,
 >;
@@ -681,8 +697,7 @@ impl OwnedOutgoing {
         let (incoming_sender, incoming_receiver) = channel(1);
         let query = AsyncQuery::create(self.outgoing_sender.clone(), incoming_receiver);
         let key = random_string(16).into_bytes();
-        let header: StreamHeader =
-            StreamHeader::with_key(key, 0);
+        let header: StreamHeader = StreamHeader::with_key(key, 0);
 
         handshake(&header, &peer, &self.priv_key, self.addr).await?;
 
@@ -722,8 +737,7 @@ impl<'a> SllpOutgoing<'a> {
         let (incoming_sender, incoming_receiver) = channel(1);
         let query = AsyncQuery::create(self.outgoing_sender.clone(), incoming_receiver);
         let key = random_string(16).into_bytes();
-        let header: StreamHeader =
-            StreamHeader::with_key(key, 0);
+        let header: StreamHeader = StreamHeader::with_key(key, 0);
 
         handshake(&header, peer, &self.priv_key, self.addr).await?;
 
@@ -791,6 +805,8 @@ impl SllpSocket {
                     Ok((data_len, addr)) => {
                         //println!("got message for: {}", addr);
                         let mut senders = streams.lock().await;
+                        // check if they are authorized, but if someone tries to spoof
+                        // IP it wo't matter because of encryption they will get garbage.
                         if let Some(sender) = senders.get_mut(&addr) {
                             sender
                                 .send((buffer[0..data_len].to_vec(), data_len))
@@ -847,8 +863,7 @@ impl SllpSocket {
         let (incoming_sender, incoming_receiver) = channel(1);
         let query = AsyncQuery::create(self.outgoing_sender.clone(), incoming_receiver);
         let key = random_string(16).into_bytes();
-        let header: StreamHeader =
-            StreamHeader::with_key(key, 0);
+        let header: StreamHeader = StreamHeader::with_key(key, 0);
         handshake(&header, peer, &self.priv_key, self.addr).await?;
 
         let stream = SllpStream::new(query, header, peer.socket_addr());
